@@ -1,0 +1,178 @@
+#!/bin/bash
+
+usage()
+{
+    cat <<EOF
+usage:
+    $1 -n|--name=<container_name> -p|--path=<path> --rootfs=<rootfs_path>
+        --passwd=<new_root_passwd> [--force]
+        [-h|--help]
+Mandatory args:
+  -n,--name         container name, used to as an identifier for that container from now on
+  -p,--path         path to where the container rootfs will be created, defaults to /var/lib/lxc/name.
+  --rootfs          path to lxc's rootfs
+  --passwd          new user password
+Optional args:
+  -f,--force        force to create new lxc container wether it exists
+  -h,--help         print this help
+EOF
+    return 0
+}
+
+options=$(getopt -o a:hp:n:fcR: -l help,passwd:,path:,rootfs:,name:,force,clean,release:,repo:,arch:,fqdn: -- "$@")
+if [ $? -ne 0 ]; then
+    usage $(basename $0)
+    exit 1
+fi
+
+eval set -- "$options"
+while true
+do
+    case "$1" in
+        -h|--help)      usage $0 && exit 0;;
+        --passwd)       passwd=$2; shift 2;;
+        -f|--force)     force=1; shift;;
+        -p|--path)      path=$2; shift 2;;
+        --rootfs)       rootfs=$2; shift 2;;
+        -n|--name)      name=$2; shift 2;;
+        --)             shift 1; break ;;
+        *)              break ;;
+    esac
+done
+
+if [ x$passwd == "x" ] || [ x$rootfs == "x" ] || [ x$path == "x" ] || [ x$name == "x" ]; then
+    usage $(basename $0)
+    exit 1
+fi
+
+#========================================================================
+
+
+ORIGIN_LXC="centos-6.5"
+
+copy_lxc() {
+    # copy origin lxc container to new one
+
+    lxc_path=`dirname $path`
+    if [ -d $path ]; then
+        if [ x$force == "x" ]; then
+            echo "lxc directory $path already exists! Use -f to force" >&2
+            exit 1
+        fi
+        rm -rf $path
+    fi
+    cp -Rp $lxc_path/$ORIGIN_LXC $path
+}
+
+
+set_root_password() {
+    # set new root password
+
+    echo "root:$passwd" > $path/passwd.tmp
+    chroot $rootfs chpasswd < $path/passwd.tmp
+}
+
+set_config_values() {
+    # set specific config values for new lxc
+
+    set_config_option lxc.utsname $name
+    set_config_option lxc.rootfs $rootfs
+    set_config_option lxc.network.hwaddr `create_hwaddr`
+    set_config_option lxc.network.ipv4 "`name_to_ip`/32"
+    set_config_option lxc.network.ipv4.gateway "10.1.1.1"
+}
+
+set_hostname() {
+    # set hostname values to lxc
+
+    replace_line $rootfs/etc/sysconfig/network "HOSTNAME" "HOSTNAME=$name"
+    replace_pattern $rootfs/etc/hosts "centos-6.5" "$name"
+}
+
+replace_line() {
+    # replace whole line with substring in file
+    # @file_to_change @match_substring @line_for_replace
+
+    _fname=$1
+    _substr=$2
+    _line=$3
+
+    grep -E "^$_substr" $_fname 2>&1 > /dev/null
+
+    if [ $? -ne 0 ]; then
+        echo "$_line" >> $_fname
+    else
+        sed -i -e "s#^$_substr.*#$_line#g" $_fname
+    fi
+}
+
+replace_pattern() {
+    # replace specific pattern in file
+    # @file_to_change @match_pattern @substring_for_replace
+
+    _fname=$1
+    _substr=$2
+    _line=$3
+
+    grep -E "$_substr" $_fname 2>&1 > /dev/null
+
+    if [ $? -eq 0 ]; then
+        sed -i "s#$_substr#$_line#g" $_fname
+    fi
+}
+
+create_hwaddr() {
+    # generate hwarrd (mac)
+
+    openssl rand -hex 5 | sed -e 's/\(..\)/:\1/g; s/^/fe/'
+}
+
+name_to_ip() {
+    # convert username to ip address by next pattern:
+    # uABCD -> 10.AB.CD.1
+    # example: u1234 -> 10.12.34.1
+    # example: u1204 -> 10.12.4.1
+
+    _first=`echo $name | sed -e 's#u##g' | sed  's#\([0-9][0-9]\)\([0-9][0-9]\)#\1#'`
+    _second=`echo $name | sed -e 's#u##g' | sed  's#\([0-9][0-9]\)\([0-9][0-9]\)#\2#'`
+    _second=`echo $_second | sed -e 's#^0##g'`
+
+    echo "10.$_first.$_second.1"
+}
+
+set_config_option() {
+    # add/replace config option by name
+    # @option_name @value
+
+    _opt=$1
+    _val=$2
+
+    conf=$path/config
+
+    grep -E "^$_opt " $conf 2>&1 > /dev/null
+
+    if [ $? -ne 0 ]; then
+        #echo "set $_opt to conf"
+        echo "$_opt = $_val" >> $conf
+    else
+        #echo "change $_opt in conf"
+        sed -i -e "s#^$_opt .*#$_opt = $_val#g" $conf
+    fi
+
+}
+
+disable_network_start() {
+    # disable start network
+    # in lxc with capabilities(7) net_admin we forbid to change
+    # network settings. IP sets automagically while lxc starts and
+    # don't need to setup networking with any init.d scripts
+
+    chroot $rootfs chkconfig network off
+}
+
+copy_lxc
+set_config_values
+set_root_password
+set_hostname
+disable_network_start
+
