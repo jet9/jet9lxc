@@ -54,6 +54,7 @@ copy_lxc() {
     # copy origin lxc container to new one
 
     lxc_path=`dirname $path`
+    touch $path/partial
     if [ -d $path ]; then
         if [ x$force == "x" ]; then
             echo "lxc directory $path already exists! Use -f to force" >&2
@@ -68,8 +69,8 @@ copy_lxc() {
 set_root_password() {
     # set new root password
 
-    echo "root:$passwd" > $path/passwd.tmp
-    chroot $rootfs chpasswd < $path/passwd.tmp
+    echo "root:$passwd" > $path/tmp_root_pass
+    chroot $rootfs chpasswd < $path/tmp_root_pass
 }
 
 set_config_values() {
